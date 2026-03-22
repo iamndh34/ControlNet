@@ -154,10 +154,8 @@ def create_dataset_from_huggingface(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading dataset from Hugging Face...")
-    print("Note: If you get a 'Dataset scripts are no longer supported' error,")
-    print("      downgrade datasets: pip install 'datasets[vision]<2.20.0'")
 
-    dataset = load_dataset("Dangindev/viet-cultural-vqa", split="train")
+    dataset = load_dataset("Dangindev/viet-cultural-vqa", split="train", trust_remote_code=True)
 
     if num_samples:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
