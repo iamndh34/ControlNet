@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Crawl Vietnamese Cultural VQA dataset from HuggingFace.
-Handles LFS files properly using huggingface_hub.
+Simple download and prepare script for Vietnamese Cultural dataset.
+Uses snapshot_download which handles LFS properly.
 """
 
 import os
@@ -11,46 +11,33 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from PIL import Image
-from huggingface_hub import snapshot_download, HfApi
+from huggingface_hub import snapshot_download
 
 
-def download_dataset(repo_id="Dangindev/viet-cultural-vqa", output_dir="./hf_downloaded"):
-    """
-    Download dataset using snapshot_download (handles LFS).
-    Only downloads image files.
-    """
+def download_dataset(repo_id="Dangindev/viet-cultural-vqa", output_dir="./hf_dataset"):
+    """Download entire dataset using snapshot_download."""
     print(f"Downloading {repo_id}...")
-    print("This may take a while as there are ~28,000 images...")
-
-    output_path = Path(output_dir)
 
     # Download only image files
     snapshot_download(
         repo_id=repo_id,
         repo_type="dataset",
-        local_dir=str(output_path),
+        local_dir=output_dir,
         local_dir_use_symlinks=False,
-        allow_patterns="images/**/*.jpg",
-        resume_download=True
+        allow_patterns="images/**/*.jpg"
     )
 
-    print(f"Downloaded to: {output_path}")
-
-    # Count downloaded images
-    image_files = list(output_path.rglob("*.jpg")) + list(output_path.rglob("*.png"))
-    print(f"Total images downloaded: {len(image_files)}")
-
-    return str(output_path)
+    print(f"Downloaded to: {output_dir}")
+    return output_dir
 
 
 def prepare_training_data(
-    input_dir="./hf_downloaded",
+    input_dir="./hf_dataset",
     output_dir="./training/vietnamese_folk_art",
-    num_samples=None
+    num_samples=None,
+    edge_method='canny'
 ):
-    """
-    Prepare training data with edge maps.
-    """
+    """Prepare training data with edge maps."""
     input_path = Path(input_dir)
     output_path = Path(output_dir)
 
@@ -60,15 +47,15 @@ def prepare_training_data(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     # Find all images
-    image_files = list(input_path.rglob("images/**/*.jpg")) + list(input_path.rglob("images/**/*.png"))
+    image_files = list(input_path.rglob("*.jpg")) + list(input_path.rglob("*.png"))
 
     if num_samples:
         image_files = image_files[:num_samples]
 
-    print(f"Processing {len(image_files)} images...")
+    print(f"Found {len(image_files)} images")
+    print("Processing...")
 
     prompts = []
-    processed = 0
 
     for idx, img_path in enumerate(tqdm(image_files)):
         try:
@@ -77,25 +64,28 @@ def prepare_training_data(
             if img is None:
                 continue
 
-            # Convert and resize
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = cv2.resize(img, (512, 512))
 
-            # Generate edge map (Canny)
+            # Generate edge map
             gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
             edges = cv2.Canny(gray, 50, 150)
-            edges = 255 - edges  # Invert: white edges on black
+            edges = 255 - edges
 
-            # Save with sequential filename
-            filename = f"{processed:06d}.png"
+            # Save
+            filename = f"{idx:06d}.png"
             cv2.imwrite(str(target_dir / filename), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             cv2.imwrite(str(source_dir / filename), edges)
 
-            # Extract category from path
-            path_str = str(img_path)
+            # Get category from path
+            path_parts = str(img_path).split('/')
+            if len(path_parts) >= 2:
+                category_part = path_parts[-2]  # Second to last
+            else:
+                category_part = "unknown"
 
-            # Map directory to prompt
-            category_prompts = {
+            # Map to prompt
+            category_map = {
                 "kien_truc": "Vietnamese traditional temple architecture",
                 "am_thuc": "Traditional Vietnamese cuisine dish",
                 "phong_canh": "Vietnamese natural landscape",
@@ -110,10 +100,10 @@ def prepare_training_data(
                 "giao_thong": "Vietnamese traditional transportation"
             }
 
-            # Find matching category
+            # Try to match category
             prompt = "Vietnamese traditional folk art"
-            for key, val in category_prompts.items():
-                if key in path_str:
+            for key, val in category_map.items():
+                if key in str(img_path):
                     prompt = val
                     break
 
@@ -123,10 +113,8 @@ def prepare_training_data(
                 "prompt": prompt
             })
 
-            processed += 1
-
         except Exception as e:
-            print(f"Error processing {img_path.name}: {e}")
+            print(f"Error: {e}")
             continue
 
     # Save prompts
@@ -134,40 +122,29 @@ def prepare_training_data(
     with open(prompt_file, 'w', encoding='utf-8') as f:
         json.dump(prompts, f, ensure_ascii=False, indent=2)
 
-    print(f"\n" + "="*50)
-    print(f"COMPLETED!")
-    print(f"="*50)
-    print(f"  Total samples: {processed}")
-    print(f"  Source (edge maps): {source_dir}")
-    print(f"  Target (original): {target_dir}")
+    print(f"\nCompleted!")
+    print(f"  Total samples: {len(prompts)}")
+    print(f"  Source: {source_dir}")
+    print(f"  Target: {target_dir}")
     print(f"  Prompts: {prompt_file}")
-    print(f"="*50)
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Crawl and prepare Vietnamese Cultural dataset")
-    parser.add_argument("--skip_download", action="store_true",
-                        help="Skip download if already downloaded")
-    parser.add_argument("--download_dir", type=str, default="./hf_downloaded",
-                        help="Directory for downloaded files")
-    parser.add_argument("--output_dir", type=str, default="./training/vietnamese_folk_art",
-                        help="Output directory for training data")
-    parser.add_argument("--num_samples", type=int, default=None,
-                        help="Number of samples to process (None = all)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--skip_download", action="store_true", help="Skip download if already downloaded")
+    parser.add_argument("--download_dir", type=str, default="./hf_dataset")
+    parser.add_argument("--output_dir", type=str, default="./training/vietnamese_folk_art")
+    parser.add_argument("--num_samples", type=int, default=None)
 
     args = parser.parse_args()
 
     download_dir = args.download_dir
 
-    # Download dataset
+    # Download if needed
     if not args.skip_download:
-        if not Path(download_dir).exists():
-            download_dir = download_dataset(output_dir=args.download_dir)
-        else:
-            print(f"Download directory exists: {download_dir}")
-            print("Use --skip_download to skip downloading if already done")
+        download_dir = download_dataset(output_dir=args.download_dir)
 
     # Prepare training data
     prepare_training_data(
