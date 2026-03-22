@@ -2,7 +2,7 @@
 """
 Script to prepare Vietnamese Folk Art dataset for ControlNet training.
 This script will:
-1. Download dataset from Hugging Face
+1. Download dataset from Hugging Face using huggingface_hub
 2. Generate scribble/edge maps from source images
 3. Create prompt.json with Vietnamese cultural prompts
 4. Organize data in the format required by ControlNet
@@ -14,14 +14,8 @@ import cv2
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+from PIL import Image
 import argparse
-
-# Try importing datasets, fallback to manual download if needed
-try:
-    from datasets import load_dataset
-    DATETS_AVAILABLE = True
-except ImportError:
-    DATETS_AVAILABLE = False
 
 # Vietnamese cultural prompts by category
 VIETNAMESE_PROMPTS = {
@@ -131,6 +125,33 @@ def generate_scribble(image, method='canny'):
     return edges
 
 
+def download_dataset_from_hf(repo_id="Dangindev/viet-cultural-vqa", cache_dir=None):
+    """
+    Download dataset files from HuggingFace using huggingface_hub.
+    Returns list of image URLs and metadata.
+    """
+    try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+        import requests
+
+        print(f"Listing files from {repo_id}...")
+
+        # Get all files in the repo
+        files = list_repo_files(repo_id, repo_type="dataset")
+
+        # Filter for image files
+        image_files = [f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'))]
+
+        print(f"Found {len(image_files)} image files in the dataset")
+        return image_files, repo_id
+
+    except Exception as e:
+        print(f"Error accessing HuggingFace: {e}")
+        print("\nPlease install huggingface_hub:")
+        print("  pip install huggingface_hub")
+        return None, None
+
+
 def create_dataset_from_huggingface(
     output_dir="./training/vietnamese_folk_art",
     num_samples=None,
@@ -153,68 +174,81 @@ def create_dataset_from_huggingface(
     source_dir.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    # Try using datasets library first
     print(f"Loading dataset from Hugging Face...")
 
-    dataset = load_dataset("Dangindev/viet-cultural-vqa", split="train", trust_remote_code=True)
+    try:
+        from datasets import load_dataset
+        print("Using datasets library...")
+        dataset = load_dataset("Dangindev/viet-cultural-vqa", split="train", trust_remote_code=True)
 
-    if num_samples:
-        dataset = dataset.select(range(min(num_samples, len(dataset))))
+        if num_samples:
+            dataset = dataset.select(range(min(num_samples, len(dataset))))
 
-    print(f"Processing {len(dataset)} images...")
+        print(f"Processing {len(dataset)} images...")
+        prompts = []
 
-    prompts = []
-    category_idx = 0
+        for idx, item in enumerate(tqdm(dataset)):
+            try:
+                # Get image
+                image = item['image']
+                if image is None:
+                    continue
 
-    for idx, item in enumerate(tqdm(dataset)):
-        try:
-            # Get image
-            image = item['image']
-            if image is None:
+                # Convert to RGB if needed
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+
+                # Resize image
+                image = np.array(image)
+                image = cv2.resize(image, (image_size, image_size))
+
+                # Generate edge map
+                edge_map = generate_scribble(image, method=edge_method)
+
+                # Get filename
+                filename = f"{idx:06d}.png"
+
+                # Save target image
+                target_path = target_dir / filename
+                cv2.imwrite(str(target_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+                # Save source (edge map)
+                source_path = source_dir / filename
+                cv2.imwrite(str(source_path), edge_map)
+
+                # Get prompt based on category
+                category = item.get('category', 'van_hoa')
+                if isinstance(category, int):
+                    # Map category index to name
+                    category_names = list(VIETNAMESE_PROMPTS.keys())
+                    category = category_names[category % len(category_names)]
+
+                # Select prompt from category
+                category_prompts = VIETNAMESE_PROMPTS.get(category, VIETNAMESE_PROMPTS['van_hoa'])
+                prompt = category_prompts[idx % len(category_prompts)]
+
+                # Add to prompts list
+                prompts.append({
+                    "source": f"source/{filename}",
+                    "target": f"target/{filename}",
+                    "prompt": prompt
+                })
+
+            except Exception as e:
+                print(f"Error processing image {idx}: {e}")
                 continue
 
-            # Convert to RGB if needed
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-
-            # Resize image
-            image = np.array(image)
-            image = cv2.resize(image, (image_size, image_size))
-
-            # Generate edge map
-            edge_map = generate_scribble(image, method=edge_method)
-
-            # Get filename
-            filename = f"{idx:06d}.png"
-
-            # Save target image
-            target_path = target_dir / filename
-            cv2.imwrite(str(target_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-
-            # Save source (edge map)
-            source_path = source_dir / filename
-            cv2.imwrite(str(source_path), edge_map)
-
-            # Get prompt based on category
-            category = item.get('category', 'van_hoa')
-            if isinstance(category, int):
-                # Map category index to name
-                category_names = list(VIETNAMESE_PROMPTS.keys())
-                category = category_names[category % len(category_names)]
-
-            # Select prompt from category
-            category_prompts = VIETNAMESE_PROMPTS.get(category, VIETNAMESE_PROMPTS['van_hoa'])
-            prompt = category_prompts[idx % len(category_prompts)]
-
-            # Add to prompts list
-            prompts.append({
-                "source": f"source/{filename}",
-                "target": f"target/{filename}",
-                "prompt": prompt
-            })
-
-        except Exception as e:
-            print(f"Error processing image {idx}: {e}")
-            continue
+    except Exception as e:
+        print(f"Error loading dataset with datasets library: {e}")
+        print("\n" + "="*60)
+        print("FALLBACK: Please use local images instead.")
+        print("="*60)
+        print("\nOption 1: Download images manually from:")
+        print("  https://huggingface.co/datasets/Dangindev/viet-cultural-vqa")
+        print("\nThen run:")
+        print(f"  python prepare_local_dataset.py --input_dir /path/to/downloaded/images")
+        return
 
     # Save prompts.json
     prompt_file = output_path / "prompt.json"
