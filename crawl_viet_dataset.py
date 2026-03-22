@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Crawl Vietnamese Cultural VQA dataset from HuggingFace.
-Downloads images directly using requests to bypass LFS issues.
+Simple crawler for Vietnamese Cultural VQA dataset.
+Downloads images directly without using the broken dataset loader.
 """
 
 import os
@@ -9,165 +9,137 @@ import json
 import requests
 from pathlib import Path
 from tqdm import tqdm
-from huggingface_hub import HfApi, login
 from PIL import Image
 import io
+import cv2
+import numpy as np
 
 
-def get_dataset_files(repo_id="Dangindev/viet-cultural-vqa"):
-    """List all files in the dataset repository."""
+def get_image_urls_from_repo():
+    """
+    Get image URLs from HuggingFace repository.
+    Since the dataset loader is broken, we'll use the API to list files.
+    """
+    from huggingface_hub import HfApi
+
     api = HfApi()
-    files = api.list_repo_files(repo_id, repo_type="dataset")
+    repo_id = "Dangindev/viet-cultural-vqa"
 
-    # Filter for image files and data files
-    image_files = [f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'))]
-    data_files = [f for f in files if f.endswith('.json') or f.endswith('.parquet')]
-
-    return image_files, data_files
-
-
-def download_file(repo_id, file_path, output_dir, token=None):
-    """Download a single file from HuggingFace."""
-    url = f"https://huggingface.co/datasets/{repo_id}/raw/main/{file_path}"
-
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    output_path = Path(output_dir) / file_path
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, 'wb') as f:
-        f.write(response.content)
-
-    return output_path
-
-
-def download_images_from_split(
-    repo_id="Dangindev/viet-cultural-vqa",
-    split="train",
-    output_dir="./viet_cultural_data",
-    num_samples=None,
-    token=None
-):
-    """
-    Download images from a specific split using the dataset API.
-
-    This bypasses LFS by loading the dataset and extracting images.
-    """
-    print(f"Loading {split} split from {repo_id}...")
+    print(f"Listing files from {repo_id}...")
 
     try:
-        import sys
-        import io
+        files = api.list_repo_files(repo_id, repo_type="dataset")
 
-        # Fix encoding issue by setting default encoding
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        # Filter for image files in the images directory
+        image_files = [f for f in files if f.startswith('images/') and f.endswith(('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'))]
 
-        from datasets import load_dataset
-        import shutil
-
-        # Download dataset files first to fix encoding
-        from huggingface_hub import snapshot_download
-
-        # Download the dataset script and data files
-        cache_dir = snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            allow_patterns=["*.parquet", "*.json", "*.jsonl"],
-            local_dir="./hf_cache_temp"
-        )
-
-        # Load dataset with download_mode set to reuse
-        dataset = load_dataset(
-            repo_id,
-            split=split,
-            trust_remote_code=True,
-            download_mode='reuse_dataset_cache'
-        )
-
-        if num_samples:
-            dataset = dataset.select(range(min(num_samples, len(dataset))))
-
-        print(f"Processing {len(dataset)} samples...")
-
-        output_path = Path(output_dir) / split
-        images_dir = output_path / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
-
-        prompts = []
-
-        for idx, item in enumerate(tqdm(dataset)):
-            try:
-                # Get image
-                image = item.get('image')
-                if image is None:
-                    continue
-
-                # Save image
-                image_filename = f"{idx:06d}.png"
-                image_path = images_dir / image_filename
-                image.save(image_path)
-
-                # Get category info
-                category = item.get('category', 'unknown')
-                keyword = item.get('keyword', '')
-
-                # Generate prompt
-                if isinstance(category, int):
-                    categories = ['kien_truc', 'am_thuc', 'phong_canh', 'trang_phuc',
-                                'doi_song', 'van_hoa', 'le_hoi', 'thu_cong']
-                    category = categories[category % len(categories)] if category < len(categories) else 'van_hoa'
-
-                prompt_map = {
-                    'kien_truc': f"Vietnamese traditional {keyword} architecture",
-                    'am_thuc': f"Traditional Vietnamese {keyword} cuisine",
-                    'phong_canh': f"Vietnamese {keyword} landscape",
-                    'trang_phuc': f"Vietnamese traditional {keyword} clothing",
-                    'doi_song': f"Vietnamese {keyword} daily life scene",
-                    'van_hoa': f"Vietnamese traditional {keyword} cultural art",
-                    'le_hoi': f"Vietnamese {keyword} festival celebration",
-                    'thu_cong': f"Vietnamese traditional {keyword} handicraft"
-                }
-
-                prompt = prompt_map.get(category, f"Vietnamese traditional {keyword} folk art")
-
-                prompts.append({
-                    "source": f"source/{image_filename}",
-                    "target": f"target/{image_filename}",
-                    "prompt": prompt
-                })
-
-            except Exception as e:
-                print(f"Error processing item {idx}: {e}")
-                continue
-
-        # Save prompts
-        import json
-        with open(output_path / "prompt.json", 'w', encoding='utf-8') as f:
-            json.dump(prompts, f, ensure_ascii=False, indent=2)
-
-        print(f"\nCompleted!")
-        print(f"  Images: {images_dir}")
-        print(f"  Prompts: {output_path / 'prompt.json'}")
-        print(f"  Total samples: {len(prompts)}")
-
-        return str(output_path)
+        print(f"Found {len(image_files)} image files")
+        return image_files, repo_id
 
     except Exception as e:
-        print(f"Error: {e}")
-        return None
+        print(f"Error listing files: {e}")
+        return [], None
 
 
-def create_edge_maps(input_dir, output_dir="./training/vietnamese_folk_art", edge_method='canny'):
-    """Create edge maps from downloaded images."""
-    import cv2
-    import numpy as np
+def download_images_direct(image_files, repo_id, output_dir="./viet_cultural_images", num_samples=None):
+    """
+    Download images directly using raw URLs.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    input_path = Path(input_dir)
+    if num_samples:
+        image_files = image_files[:num_samples]
+
+    print(f"Downloading {len(image_files)} images...")
+
+    prompts = []
+    downloaded = 0
+
+    for idx, file_path in enumerate(tqdm(image_files)):
+        try:
+            # Construct raw URL
+            url = f"https://huggingface.co/datasets/{repo_id}/raw/main/{file_path}"
+
+            # Download image
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+
+            # Load and process image
+            img = Image.open(io.BytesIO(response.content))
+
+            # Convert to RGB if needed
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            # Resize to 512x512
+            img = img.resize((512, 512), Image.Resampling.LANCZOS)
+
+            # Generate filename
+            filename = f"{idx:06d}.png"
+
+            # Save target image
+            target_path = output_path / filename
+            img.save(target_path)
+
+            # Extract category from path
+            path_parts = file_path.split('/')
+            if len(path_parts) >= 3:
+                category = path_parts[1]  # Second level directory
+            else:
+                category = "unknown"
+
+            # Generate prompt based on category
+            category_prompts = {
+                "kien_truc": "Vietnamese traditional temple architecture",
+                "am_thuc": "Traditional Vietnamese cuisine dish",
+                "phong_canh": "Vietnamese natural landscape",
+                "trang_phuc": "Vietnamese traditional clothing",
+                "doi_song": "Vietnamese daily life scene",
+                "van_hoa": "Vietnamese folk culture art",
+                "le_hoi": "Vietnamese traditional festival",
+                "tro_choi": "Vietnamese folk game scene",
+                "the_thao": "Vietnamese traditional sport",
+                "thu_cong": "Vietnamese handicraft art",
+                "nhac_cu": "Vietnamese traditional instrument",
+                "giao_thong": "Vietnamese traditional transportation"
+            }
+
+            prompt = category_prompts.get(category, "Vietnamese traditional folk art")
+
+            prompts.append({
+                "source": f"source/{filename}",
+                "target": f"target/{filename}",
+                "prompt": prompt
+            })
+
+            downloaded += 1
+
+        except Exception as e:
+            print(f"Error downloading {file_path}: {e}")
+            continue
+
+    # Save prompts
+    prompt_file = output_path / "prompt.json"
+    with open(prompt_file, 'w', encoding='utf-8') as f:
+        json.dump(prompts, f, ensure_ascii=False, indent=2)
+
+    print(f"\nDownloaded {downloaded}/{len(image_files)} images")
+    print(f"Saved to: {output_path}")
+    print(f"Prompts saved to: {prompt_file}")
+
+    return str(output_path)
+
+
+def create_edge_maps_from_images(
+    image_dir="./viet_cultural_images",
+    output_dir="./training/vietnamese_folk_art",
+    edge_method='canny'
+):
+    """
+    Create edge maps from downloaded images.
+    """
+    image_path = Path(image_dir)
     output_path = Path(output_dir)
 
     source_dir = output_path / "source"
@@ -175,8 +147,16 @@ def create_edge_maps(input_dir, output_dir="./training/vietnamese_folk_art", edg
     source_dir.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find images
-    image_files = list(input_path.rglob("*.png")) + list(input_path.rglob("*.jpg"))
+    # Load prompts
+    prompt_file = image_path / "prompt.json"
+    if prompt_file.exists():
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            prompts = json.load(f)
+    else:
+        prompts = []
+
+    # Get all images
+    image_files = sorted(image_path.glob("*.png")) + sorted(image_path.glob("*.jpg"))
 
     print(f"Found {len(image_files)} images")
     print("Creating edge maps...")
@@ -189,7 +169,6 @@ def create_edge_maps(input_dir, output_dir="./training/vietnamese_folk_art", edg
                 continue
 
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (512, 512))
 
             # Generate edge map
             gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -210,30 +189,48 @@ def create_edge_maps(input_dir, output_dir="./training/vietnamese_folk_art", edg
             print(f"Error processing {img_path}: {e}")
             continue
 
-    print(f"Edge maps created in {source_dir}")
-    print(f"Target images in {target_dir}")
+    # Copy prompts
+    output_prompt = output_path / "prompt.json"
+    with open(output_prompt, 'w', encoding='utf-8') as f:
+        json.dump(prompts, f, ensure_ascii=False, indent=2)
+
+    print(f"\nEdge maps created:")
+    print(f"  Source: {source_dir}")
+    print(f"  Target: {target_dir}")
+    print(f"  Prompts: {output_prompt}")
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Crawl Vietnamese Cultural VQA dataset")
-    parser.add_argument("--split", type=str, default="train", choices=["train", "validation", "test"])
-    parser.add_argument("--num_samples", type=int, default=None)
-    parser.add_argument("--output_dir", type=str, default="./viet_cultural_data")
-    parser.add_argument("--create_edges", action="store_true")
+    parser.add_argument("--num_samples", type=int, default=5000, help="Number of images to download")
+    parser.add_argument("--output_dir", type=str, default="./viet_cultural_images")
+    parser.add_argument("--create_edges", action="store_true", help="Create edge maps after download")
     parser.add_argument("--edge_output", type=str, default="./training/vietnamese_folk_art")
+    parser.add_argument("--edge_method", type=str, default="canny", choices=["canny", "sobel"])
 
     args = parser.parse_args()
 
-    # Download dataset
-    data_dir = download_images_from_split(
-        split=args.split,
+    # Get image files
+    image_files, repo_id = get_image_urls_from_repo()
+
+    if not image_files:
+        print("No images found. Please check the repository.")
+        exit(1)
+
+    # Download images
+    image_dir = download_images_direct(
+        image_files=image_files,
+        repo_id=repo_id,
         output_dir=args.output_dir,
         num_samples=args.num_samples
     )
 
     # Create edge maps if requested
-    if args.create_edges and data_dir:
-        images_dir = Path(data_dir) / "images"
-        create_edge_maps(images_dir, args.edge_output)
+    if args.create_edges:
+        create_edge_maps_from_images(
+            image_dir=image_dir,
+            output_dir=args.edge_output,
+            edge_method=args.edge_method
+        )
