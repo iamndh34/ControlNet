@@ -149,6 +149,8 @@ torchmetrics==1.9.0
 torchvision==0.26.0.dev20260321+cu128
 tqdm==4.67.3
 transformers==4.25.1
+# HuggingFace datasets - pin version to avoid "Dataset scripts are no longer supported" error
+datasets[vision]>=2.14.0,<2.20.0
 triton==3.6.0+git9844da95
 typing-inspection==0.4.2
 typing_extensions==4.15.0
