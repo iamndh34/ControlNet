@@ -14,8 +14,14 @@ import cv2
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from datasets import load_dataset
 import argparse
+
+# Try importing datasets, fallback to manual download if needed
+try:
+    from datasets import load_dataset
+    DATETS_AVAILABLE = True
+except ImportError:
+    DATETS_AVAILABLE = False
 
 # Vietnamese cultural prompts by category
 VIETNAMESE_PROMPTS = {
@@ -148,6 +154,9 @@ def create_dataset_from_huggingface(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading dataset from Hugging Face...")
+    print("Note: If you get a 'Dataset scripts are no longer supported' error,")
+    print("      downgrade datasets: pip install 'datasets[vision]<2.20.0'")
+
     dataset = load_dataset("Dangindev/viet-cultural-vqa", split="train")
 
     if num_samples:
