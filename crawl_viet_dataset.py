@@ -61,11 +61,33 @@ def download_images_from_split(
     print(f"Loading {split} split from {repo_id}...")
 
     try:
+        import sys
+        import io
+
+        # Fix encoding issue by setting default encoding
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
         from datasets import load_dataset
         import shutil
 
-        # Load dataset
-        dataset = load_dataset(repo_id, split=split, trust_remote_code=True)
+        # Download dataset files first to fix encoding
+        from huggingface_hub import snapshot_download
+
+        # Download the dataset script and data files
+        cache_dir = snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            allow_patterns=["*.parquet", "*.json", "*.jsonl"],
+            local_dir="./hf_cache_temp"
+        )
+
+        # Load dataset with download_mode set to reuse
+        dataset = load_dataset(
+            repo_id,
+            split=split,
+            trust_remote_code=True,
+            download_mode='reuse_dataset_cache'
+        )
 
         if num_samples:
             dataset = dataset.select(range(min(num_samples, len(dataset))))
